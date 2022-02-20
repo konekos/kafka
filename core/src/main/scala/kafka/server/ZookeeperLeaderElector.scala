@@ -52,6 +52,7 @@ class ZookeeperLeaderElector(controllerContext: ControllerContext,
   }
 
   private def getControllerID(): Int = {
+    // 尝试读取 znode 值，没有-1，有返回controller 值
     controllerContext.zkUtils.readDataMaybeNull(electionPath)._1 match {
        case Some(controller) => KafkaController.parseControllerId(controller)
        case None => -1
@@ -68,19 +69,25 @@ class ZookeeperLeaderElector(controllerContext: ControllerContext,
      * it's possible that the controller has already been elected when we get here. This check will prevent the following 
      * createEphemeralPath method from getting into an infinite loop if this broker is already the controller.
      */
+    // 已经有 controller 了。
     if(leaderId != -1) {
        debug("Broker %d has been elected as leader, so stopping the election process.".format(leaderId))
        return amILeader
     }
-
+    // 尝试创建 ZNODE 成为 leader
     try {
       val zkCheckedEphemeral = new ZKCheckedEphemeral(electionPath,
                                                       electString,
                                                       controllerContext.zkUtils.zkConnection.getZookeeper,
                                                       JaasUtils.isZkSecurityEnabled())
+
+      // ZK 保证只有一个人成功创建 /controller znode
+      // 创建成功成为 leader
+
       zkCheckedEphemeral.create()
       info(brokerId + " successfully elected as leader")
       leaderId = brokerId
+      // 调用成为 leader 到函数
       onBecomingLeader()
     } catch {
       case e: ZkNodeExistsException =>

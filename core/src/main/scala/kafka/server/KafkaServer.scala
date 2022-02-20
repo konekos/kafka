@@ -175,7 +175,7 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
 
         /* start scheduler */
         kafkaScheduler.startup()
-
+        // 严重依赖 ZK
         /* setup zookeeper */
         zkUtils = initZk()
 
@@ -195,9 +195,15 @@ class KafkaServer(val config: KafkaConfig, time: Time = SystemTime, threadNamePr
           isShuttingDown)
         replicaManager.startup()
 
+        // 每个 broker 都有一个 KafkaController
+        // 同一时间只有一个BROKER成为 CONTROLLER
+        // 其他 BROKER 监听，一旦那个 broker 挂了，其他人尝试成为 controller
+
         /* start kafka controller */
         kafkaController = new KafkaController(config, zkUtils, brokerState, kafkaMetricsTime, metrics, threadNamePrefix)
         kafkaController.startup()
+
+        // 消费组 coordinator
 
         /* start group coordinator */
         groupCoordinator = GroupCoordinator(config, zkUtils, replicaManager, kafkaMetricsTime)

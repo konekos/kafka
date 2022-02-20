@@ -372,8 +372,10 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
               newBrokers.foreach(controllerContext.controllerChannelManager.addBroker)
               deadBrokerIds.foreach(controllerContext.controllerChannelManager.removeBroker)
               if(newBrokerIds.size > 0)
+
                 controller.onBrokerStartup(newBrokerIdsSorted)
               if(deadBrokerIds.size > 0)
+
                 controller.onBrokerFailure(deadBrokerIdsSorted)
             } catch {
               case e: Throwable => error("Error while handling broker changes", e)

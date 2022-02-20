@@ -297,8 +297,11 @@ class ByteBufferMessageSet(val buffer: ByteBuffer) extends MessageSet with Loggi
   def writeFullyTo(channel: GatheringByteChannel): Int = {
     buffer.mark()
     var written = 0
-    while (written < sizeInBytes)
+    // while 循环不停循环，写完为止
+    while (written < sizeInBytes) {
+      // 写入 oscache，不保证立马到磁盘
       written += channel.write(buffer)
+    }
     buffer.reset()
     written
   }

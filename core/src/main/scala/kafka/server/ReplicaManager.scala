@@ -116,6 +116,8 @@ class ReplicaManager(val config: KafkaConfig,
     new Partition(t, p, time, this)
   })
   private val replicaStateChangeLock = new Object
+
+  // 负责拉取
   val replicaFetcherManager = new ReplicaFetcherManager(config, this, metrics, jTime, threadNamePrefix)
   private val highWatermarkCheckPointThreadStarted = new AtomicBoolean(false)
   val highWatermarkCheckpoints = config.logDirs.map(dir => (new File(dir).getAbsolutePath, new OffsetCheckpoint(new File(dir, ReplicaManager.HighWatermarkFilename)))).toMap
@@ -216,6 +218,7 @@ class ReplicaManager(val config: KafkaConfig,
   def startup() {
     // start ISR expiration thread
     scheduler.schedule("isr-expiration", maybeShrinkIsr, period = config.replicaLagTimeMaxMs, unit = TimeUnit.MILLISECONDS)
+    // ISR 落后太多 踢出
     scheduler.schedule("isr-change-propagation", maybePropagateIsrChanges, period = 2500L, unit = TimeUnit.MILLISECONDS)
   }
 
@@ -315,7 +318,6 @@ class ReplicaManager(val config: KafkaConfig,
       case Some(partition) => partition.getReplica(replicaId)
     }
   }
-
   /**
    * Append messages to leader replicas of the partition, and wait for them to be replicated to other replicas;
    * the callback function will be triggered either when timeout or the required acks are satisfied
@@ -326,8 +328,13 @@ class ReplicaManager(val config: KafkaConfig,
                      messagesPerPartition: Map[TopicPartition, MessageSet],
                      responseCallback: Map[TopicPartition, PartitionResponse] => Unit) {
 
+
+
     if (isValidRequiredAcks(requiredAcks)) {
       val sTime = SystemTime.milliseconds
+
+      // 调用appendToLocalLog 写入每个分区磁盘文件
+
       val localProduceResults = appendToLocalLog(internalTopicsAllowed, messagesPerPartition, requiredAcks)
       debug("Produce to local log in %d ms".format(SystemTime.milliseconds - sTime))
 
@@ -380,7 +387,9 @@ class ReplicaManager(val config: KafkaConfig,
     messagesPerPartition.size > 0 &&
     localProduceResults.values.count(_.error.isDefined) < messagesPerPartition.size
   }
-
+  // 就支持三种
+  // -1 写成功就返回
+  // 1
   private def isValidRequiredAcks(requiredAcks: Short): Boolean = {
     requiredAcks == -1 || requiredAcks == 1 || requiredAcks == 0
   }
@@ -397,6 +406,8 @@ class ReplicaManager(val config: KafkaConfig,
       BrokerTopicStats.getBrokerAllTopicsStats().totalProduceRequestRate.mark()
 
       // reject appending to internal topics if it is not allowed
+
+      // 内部 topic __consumer_offsets，kafka内部使用
       if (Topic.isInternal(topicPartition.topic) && !internalTopicsAllowed) {
         (topicPartition, LogAppendResult(
           LogAppendInfo.UnknownLogAppendInfo,
@@ -406,6 +417,8 @@ class ReplicaManager(val config: KafkaConfig,
           val partitionOpt = getPartition(topicPartition.topic, topicPartition.partition)
           val info = partitionOpt match {
             case Some(partition) =>
+
+              // 调用 Partition 的方法，写入磁盘文件
               partition.appendMessagesToLeader(messages.asInstanceOf[ByteBufferMessageSet], requiredAcks)
             case None => throw new UnknownTopicOrPartitionException("Partition %s doesn't exist on %d"
               .format(topicPartition, localBrokerId))
@@ -465,6 +478,10 @@ class ReplicaManager(val config: KafkaConfig,
     val fetchOnlyCommitted: Boolean = ! Request.isValidBrokerId(replicaId)
 
     // read from local logs
+
+    // 从本地磁盘读，指定每个分区从哪个offset读取
+    // 使用稀疏索引
+
     val logReadResults = readFromLocalLog(fetchOnlyFromLeader, fetchOnlyCommitted, fetchInfo)
 
     // if the fetch comes from the follower,
@@ -486,6 +503,9 @@ class ReplicaManager(val config: KafkaConfig,
         FetchResponsePartitionData(result.errorCode, result.hw, result.info.messageSet))
       responseCallback(fetchPartitionData)
     } else {
+
+      // 时间轮 延迟fetch
+
       // construct the fetch results from the read results
       val fetchPartitionStatus = logReadResults.map { case (topicAndPartition, result) =>
         (topicAndPartition, FetchPartitionStatus(result.info.fetchOffsetMetadata, fetchInfo.get(topicAndPartition).get))
@@ -732,15 +752,36 @@ class ReplicaManager(val config: KafkaConfig,
     partitionsToMakeLeaders
   }
 
+
+  // 一个broker 感觉到自己被分配了分区之后，调用该方法
+  // 为一批 follower 分区创建一个 fetcher 线程
+  // 接下来fetcher 拉取数据到本地副本
+
   /*
    * Make the current broker to become follower for a given set of partitions by:
    *
    * 1. Remove these partitions from the leader partitions set.
+   *
+   * follower 分配了给broker，从 leader分区移除
+   *
    * 2. Mark the replicas as followers so that no more data can be added from the producer clients.
+   *
+   * 副本标志为 follower producer不能写入数据
+   *
    * 3. Stop fetchers for these partitions so that no more data can be added by the replica fetcher threads.
+   *
+   * 对这些分区停止已有对 fetcher 线程，不能添加数据
+   *
    * 4. Truncate the log and checkpoint offsets for these partitions.
+   *
+   * truncate 分区的日志，记录下来这些分区的offsets。
    * 5. Clear the produce and fetch requests in the purgatory
+   *
+   * 清理掉produce 和 拉取请求
+   *
    * 6. If the broker is not shutting down, add the fetcher to the new leaders.
+   *
+   * 如果 broker 没有停止，添加拉取 leader 的fetcher。
    *
    * The ordering of doing these steps make sure that the replicas in transition will not
    * take any more messages before checkpointing offsets so that all messages before the checkpoint

@@ -230,12 +230,17 @@ class Partition(val topic: String,
     }
   }
 
+  // 更新 LEO
+
   /**
    * Update the log end offset of a certain replica of this partition
    */
   def updateReplicaLogReadResult(replicaId: Int, logReadResult: LogReadResult) {
     getReplica(replicaId) match {
       case Some(replica) =>
+
+        // Replica 代表的 follower，leader 维护所有follower 状态
+        // 在这更新 follower 的 LEO
         replica.updateLogReadResult(logReadResult)
         // check if we need to expand ISR to include this replica
         // if it is not in the ISR yet
@@ -341,16 +346,16 @@ class Partition(val topic: String,
    * Check and maybe increment the high watermark of the partition;
    * this function can be triggered when
    *
-   * 1. Partition ISR changed
-   * 2. Any replica's LEO changed
+   * 1. Partition ISR changed  PARTITION ISR 变更
+   * 2. Any replica's LEO changed  副本 LEO 变更
    *
    * Returns true if the HW was incremented, and false otherwise.
    * Note There is no need to acquire the leaderIsrUpdate lock here
    * since all callers of this private API acquire that lock
    */
   private def maybeIncrementLeaderHW(leaderReplica: Replica): Boolean = {
-    val allLogEndOffsets = inSyncReplicas.map(_.logEndOffset)
-    val newHighWatermark = allLogEndOffsets.min(new LogOffsetMetadata.OffsetOrdering)
+    val allLogEndOffsets = inSyncReplicas.map(_.logEndOffset) // 获取所有副本LEO
+    val newHighWatermark = allLogEndOffsets.min(new LogOffsetMetadata.OffsetOrdering) //最小LEO 作为 HW
     val oldHighWatermark = leaderReplica.highWatermark
     if (oldHighWatermark.messageOffset < newHighWatermark.messageOffset || oldHighWatermark.onOlderSegment(newHighWatermark)) {
       leaderReplica.highWatermark = newHighWatermark
@@ -387,6 +392,9 @@ class Partition(val topic: String,
             // we may need to increment high watermark since ISR could be down to 1
 
             replicaManager.isrShrinkRate.mark()
+
+            // 踢出了 follower ，需要更新 HW
+
             maybeIncrementLeaderHW(leaderReplica)
           } else {
             false
@@ -402,6 +410,12 @@ class Partition(val topic: String,
   }
 
   def getOutOfSyncReplicas(leaderReplica: Replica, maxLagMs: Long): Set[Replica] = {
+
+    // 挂了
+    // 很慢 fgc 等
+
+    // 拉取时间超过 10s
+
     /**
      * there are two cases that will be handled here -
      * 1. Stuck followers: If the leo of the replica hasn't been updated for maxLagMs ms,
@@ -429,6 +443,7 @@ class Partition(val topic: String,
       leaderReplicaOpt match {
         case Some(leaderReplica) =>
           val log = leaderReplica.log.get
+          // 自己配置的 =2 时要求 1leader 1follower
           val minIsr = log.config.minInSyncReplicas
           val inSyncSize = inSyncReplicas.size
 
@@ -437,9 +452,12 @@ class Partition(val topic: String,
             throw new NotEnoughReplicasException("Number of insync replicas for partition [%s,%d] is [%d], below required minimum [%d]"
               .format(topic, partitionId, inSyncSize, minIsr))
           }
-
+          // 调用 log 写磁盘
           val info = log.append(messages, assignOffsets = true)
           // probably unblock some follower fetch requests since log end offset has been updated
+
+          // 分区有新的数据进入了
+          // 唤醒在时间轮里等待的新任务
           replicaManager.tryCompleteDelayedFetch(new TopicPartitionOperationKey(this.topic, this.partitionId))
           // we may need to increment high watermark since ISR could be down to 1
           (info, maybeIncrementLeaderHW(leaderReplica))

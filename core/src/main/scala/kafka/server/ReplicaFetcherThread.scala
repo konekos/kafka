@@ -130,6 +130,15 @@ class ReplicaFetcherThread(name: String,
       // for the follower replica, we do not need to keep
       // its segment base offset the physical position,
       // these values will be computed upon making the leader
+
+      // 每次 fetch 数据，leader 会返回 hw
+      // follower 根据自己 LEO 和 HW 的最小值，作为 HW。
+      //  leader 和 follower HW 不可能完全一致。
+
+
+
+
+
       replica.highWatermark = new LogOffsetMetadata(followerHighWatermark)
       if (logger.isTraceEnabled)
         trace("Follower %d set replica high watermark for partition [%s,%d] to %s"
@@ -241,6 +250,7 @@ class ReplicaFetcherThread(name: String,
       else {
         val send = new RequestSend(sourceBroker.id.toString, header, request.toStruct)
         val clientRequest = new ClientRequest(time.milliseconds(), true, send, null)
+        // 同步阻塞方式
         networkClient.blockingSendAndReceive(clientRequest)(time)
       }
     }
@@ -271,9 +281,17 @@ class ReplicaFetcherThread(name: String,
     val requestMap = mutable.Map.empty[TopicPartition, JFetchRequest.PartitionData]
 
     partitionMap.foreach { case ((TopicAndPartition(topic, partition), partitionFetchState)) =>
-      if (partitionFetchState.isActive)
+      if (partitionFetchState.isActive) {
         requestMap(new TopicPartition(topic, partition)) = new JFetchRequest.PartitionData(partitionFetchState.offset, fetchSize)
+        // 从哪个 offset 开始拉，最大拉多少
+
+      }
     }
+
+    // 一次 fetch 过去，至少拉取 minBytes
+    // 一个字节数据没有，等待一段时间 500ms
+    // 500ms 没有数据则返回  时间轮
+    //
 
     new FetchRequest(new JFetchRequest(replicaId, maxWait, minBytes, requestMap.asJava))
   }

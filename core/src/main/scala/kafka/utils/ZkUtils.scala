@@ -43,7 +43,7 @@ object ZkUtils {
   val ConsumersPath = "/consumers"
   val BrokerIdsPath = "/brokers/ids"
   val BrokerTopicsPath = "/brokers/topics"
-  val ControllerPath = "/controller"
+  val ControllerPath = "/controller"  //在 controller 这个znode 上 选举，注册监听器
   val ControllerEpochPath = "/controller_epoch"
   val ReassignPartitionsPath = "/admin/reassign_partitions"
   val DeleteTopicsPath = "/admin/delete_topics"

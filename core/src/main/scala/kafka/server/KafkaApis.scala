@@ -678,7 +678,7 @@ class KafkaApis(val requestChannel: RequestChannel,
   }
 
   /**
-   * Handle a topic metadata request
+   * Handle a topic metadata request   获取所有topic 元数据
    */
   def handleTopicMetadataRequest(request: RequestChannel.Request) {
     val metadataRequest = request.body.asInstanceOf[MetadataRequest]

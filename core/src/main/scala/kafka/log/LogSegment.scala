@@ -78,6 +78,19 @@ class LogSegment(val log: FileMessageSet,
     if (messages.sizeInBytes > 0) {
       trace("Inserting %d bytes at offset %d at position %d".format(messages.sizeInBytes, offset, log.sizeInBytes()))
       // append an entry to the index (if needed)
+
+      // 先写 index 文件，稀疏索引
+
+      // xx.log
+      // ddd 日志 offset=23756, 物理字节位置 offset=456
+
+      // xx.log
+      // offset = 23756,物理 offset = 456 这样不是稀疏索引
+      // offset = 23756-23799, offset = 456 这样就是稀疏索引
+
+      //假设查询23757，查询到范围，从456读磁盘
+      // 默认每隔4096字节，创建一个稀疏索引
+
       if(bytesSinceLastIndexEntry > indexIntervalBytes) {
         index.append(offset, log.sizeInBytes())
         this.bytesSinceLastIndexEntry = 0
@@ -102,8 +115,15 @@ class LogSegment(val log: FileMessageSet,
    */
   @threadsafe
   private[log] def translateOffset(offset: Long, startingFilePosition: Int = 0): OffsetPosition = {
-    val mapping = index.lookup(offset)
+    val mapping = index.lookup(offset) //二分查找
     log.searchFor(offset, max(mapping.position, startingFilePosition))
+
+    // offset 23867  position=12345
+    // offset 24590 postion=14536
+    // offset 25986 postion=15555
+
+    // 查找的offset 是25533
+    // 从14536开始扫盘
   }
 
   /**
@@ -124,6 +144,8 @@ class LogSegment(val log: FileMessageSet,
       throw new IllegalArgumentException("Invalid max size for log read (%d)".format(maxSize))
 
     val logSize = log.sizeInBytes // this may change, need to save a consistent copy
+
+    // 根据稀疏索引 找到磁盘文件中的偏移量
     val startPosition = translateOffset(startOffset)
 
     // if the start position is already off the end of the log, return null

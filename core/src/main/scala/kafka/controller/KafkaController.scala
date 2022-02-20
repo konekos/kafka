@@ -312,8 +312,8 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
    * 3. Initializes the controller's context object that holds cache objects for current topics, live brokers and
    *    leaders for all existing partitions.
    * 4. Starts the controller's channel manager
-   * 5. Starts the replica state machine
-   * 6. Starts the partition state machine
+   * 5. Starts the replica state machine   监听各个副本状态
+   * 6. Starts the partition state machine  监听分区状态
    * If it encounters any unexpected exception/error while becoming controller, it resigns as the current controller.
    * This ensures another controller election will be triggered and there will always be an actively serving controller
    */
@@ -328,7 +328,10 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
       registerReassignedPartitionsListener()
       registerIsrChangeNotificationListener()
       registerPreferredReplicaElectionListener()
+      // broker/topics 监听
       partitionStateMachine.registerListeners()
+
+
       replicaStateMachine.registerListeners()
       initializeControllerContext()
       replicaStateMachine.startup()
@@ -406,7 +409,9 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
    * This callback is invoked by the replica state machine's broker change listener, with the list of newly started
    * brokers as input. It does the following -
    * 1. Sends update metadata request to all live and shutting down brokers
+   * 一旦有 broker 变动，发送元数据更新请求到所有 broker
    * 2. Triggers the OnlinePartition state change for all new/offline partitions
+   * 一有新 broker上线，会影响分区状态
    * 3. It checks whether there are reassigned replicas assigned to any newly started brokers.  If
    *    so, it performs the reassignment logic for each topic/partition.
    *
@@ -503,6 +508,7 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
   def onNewTopicCreation(topics: Set[String], newPartitions: Set[TopicAndPartition]) {
     info("New topic creation callback for %s".format(newPartitions.mkString(",")))
     // subscribe to partition changes
+    // 分区变动监听器
     topics.foreach(topic => partitionStateMachine.registerPartitionChangeListener(topic))
     onNewPartitionCreation(newPartitions)
   }
@@ -679,8 +685,14 @@ class KafkaController(val config : KafkaConfig, zkUtils: ZkUtils, val brokerStat
   def startup() = {
     inLock(controllerContext.controllerLock) {
       info("Controller starting up")
+      // 注册 zk 断开监听器
       registerSessionExpirationListener()
       isRunning = true
+      // 选主
+
+      //在 controller 这个znode 上，注册监听器
+      // 如果有人竞争成为了 controller，那么它会感知到
+      // 如果有人成为了 controller，结果自己挂掉了，不再是 controller了，也会感知到
       controllerElector.startup
       info("Controller startup complete")
     }

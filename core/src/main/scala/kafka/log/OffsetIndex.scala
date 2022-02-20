@@ -58,6 +58,11 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
   private val lock = new ReentrantLock
   
   /* initialize the memory mapping for this index */
+
+  // 磁盘文件映射到内存读技术
+  // .index 文件映射到内存
+
+
   @volatile
   private[this] var mmap: MappedByteBuffer = {
     val newlyCreated = _file.createNewFile()
@@ -207,10 +212,15 @@ class OffsetIndex(@volatile private[this] var _file: File, val baseOffset: Long,
       require(!isFull, "Attempt to append to a full index (size = " + _entries + ").")
       if (_entries == 0 || offset > _lastOffset) {
         debug("Adding index entry %d => %d to %s.".format(offset, position, _file.getName))
+
+        // mmap写入，写入内存
+        // 一个稀疏索引对应一个物理到位置。日志分区的逻辑 offset 减去索引文件开始到offset。
         mmap.putInt((offset - baseOffset).toInt)
+        // 存物理位置。
         mmap.putInt(position)
         _entries += 1
         _lastOffset = offset
+        // 一个稀疏索引8个字节
         require(_entries * 8 == mmap.position, _entries + " entries but file position in index is " + mmap.position + ".")
       } else {
         throw new InvalidOffsetException("Attempt to append an offset (%d) to position %d no larger than the last offset appended (%d) to %s."

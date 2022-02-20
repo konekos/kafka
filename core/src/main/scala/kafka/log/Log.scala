@@ -328,10 +328,14 @@ class Log(val dir: File,
 
     try {
       // they are valid, insert them in the log
+      // 一个分区目录，写入的时候是加锁的
       lock synchronized {
 
         if (assignOffsets) {
           // assign offsets to the message set
+
+          // 每个分区目录，offset 是顺序增长的。
+
           val offset = new LongRef(nextOffsetMetadata.messageOffset)
           appendInfo.firstOffset = offset.value
           val now = time.milliseconds
@@ -378,19 +382,19 @@ class Log(val dir: File,
           throw new RecordBatchTooLargeException("Message set size is %d bytes which exceeds the maximum configured segment size of %d."
             .format(validMessages.sizeInBytes, config.segmentSize))
         }
-
+        // 如果一个 segment 已经写满类，固定1G，需要创建新的 segment file
         // maybe roll the log if this segment is full
         val segment = maybeRoll(validMessages.sizeInBytes)
-
+        // 基于 segment 写入磁盘
         // now append to the log
         segment.append(appendInfo.firstOffset, validMessages)
-
+        // 更新 leo，lastOffset + 1
         // increment the log end offset
         updateLogEndOffset(appendInfo.lastOffset + 1)
 
         trace("Appended message set to log %s with first offset: %d, next offset: %d, and messages: %s"
           .format(this.name, appendInfo.firstOffset, nextOffsetMetadata.messageOffset, validMessages))
-
+        // 看下是否需要 flush
         if (unflushedMessages >= config.flushInterval)
           flush()
 
@@ -501,7 +505,7 @@ class Log(val dir: File,
     val next = currentNextOffsetMetadata.messageOffset
     if(startOffset == next)
       return FetchDataInfo(currentNextOffsetMetadata, MessageSet.Empty)
-
+    // 根据 offset 判断在哪个 segment
     var entry = segments.floorEntry(startOffset)
 
     // attempt to read beyond the log end offset is an error
@@ -529,6 +533,9 @@ class Log(val dir: File,
           entry.getValue.size
         }
       }
+
+      // 读取
+
       val fetchInfo = entry.getValue.read(startOffset, maxOffset, maxLength, maxPosition)
       if(fetchInfo == null) {
         entry = segments.higherEntry(entry.getKey)
@@ -641,7 +648,14 @@ class Log(val dir: File,
   def roll(): LogSegment = {
     val start = time.nanoseconds
     lock synchronized {
+
+      // LEO = 0；
+      //写一条数据 LEO = 1，写入数据的 offset = 0；
+      // LEO 永远大于最后一条数据的 offset。
+
       val newOffset = logEndOffset
+
+      // 分区目录下面以 LEO 为name 创建 index 文件和 log文件。
       val logFile = logFilename(dir, newOffset)
       val indexFile = indexFilename(dir, newOffset)
       for(file <- List(logFile, indexFile); if file.exists) {
@@ -685,6 +699,11 @@ class Log(val dir: File,
    */
   def unflushedMessages() = this.logEndOffset - this.recoveryPoint
 
+  // 假设现在已经flush到磁盘到日志，offset=32800，那么 recoveryPoint 就是 32800。
+  // 假如还存在os cache 中的数据，offset=32900，LEO = 32901
+  // leo - recovery 和 flushInterval 比较，看是否需要刷盘
+
+
   /**
    * Flush all log segments
    */
@@ -703,6 +722,7 @@ class Log(val dir: File,
       segment.flush()
     lock synchronized {
       if(offset > this.recoveryPoint) {
+        // recovery 变成 leo
         this.recoveryPoint = offset
         lastflushedTime.set(time.milliseconds)
       }
